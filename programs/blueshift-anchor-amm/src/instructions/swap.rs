@@ -1,115 +1,149 @@
 use anchor_lang::prelude::*;
 use anchor_spl::token::{Mint, Token, TokenAccount, Transfer, transfer};
-use anchor_spl::associated_token::AssociatedToken;
 use constant_product_curve::{ConstantProduct, LiquidityPair};
-use crate::state::Config;
+use crate::state::{Config, LazyConfig};
 use crate::errors::AmmError;
 
 #[derive(Accounts)]
 pub struct Swap<'info> {
     #[account(mut)]
     pub user: Signer<'info>,
-    pub mint_x: Box<Account<'info, Mint>>,
-    pub mint_y: Box<Account<'info, Mint>>,
-    #[account(
-        init_if_needed,
-        payer = user,
-        associated_token::mint = mint_x,
-        associated_token::authority = user
-    )]
-    pub user_x: Box<Account<'info, TokenAccount>>,
-    #[account(
-        init_if_needed,
-        payer = user,
-        associated_token::mint = mint_y,
-        associated_token::authority = user
-    )]
-    pub user_y: Box<Account<'info, TokenAccount>>,
+    pub mint_from: Box<Account<'info, Mint>>,
+    pub mint_to: Box<Account<'info, Mint>>,
     #[account(
         mut,
-        associated_token::mint = mint_x,
-        associated_token::authority = auth
+        associated_token::mint = mint_from,
+        associated_token::authority = user
     )]
-    pub vault_x: Box<Account<'info, TokenAccount>>,
+    pub user_from: Box<Account<'info, TokenAccount>>,
     #[account(
         mut,
-        associated_token::mint = mint_y,
-        associated_token::authority = auth
+        associated_token::mint = mint_to,
+        associated_token::authority = user
     )]
-    pub vault_y: Box<Account<'info, TokenAccount>>,
-    ///CHECKED: This is not dangerous. It's just used for signing.
-    #[account(seeds = [b"auth"], bump = config.auth_bump)]
-    pub auth: UncheckedAccount<'info>,
+    pub user_to: Box<Account<'info, TokenAccount>>,
     #[account(
-        has_one = mint_x,
-        has_one = mint_y,
-        seeds = [b"config", config.seed.to_le_bytes().as_ref(), mint_x.key().as_ref(), mint_y.key().as_ref()], 
-        bump = config.config_bump,
+        mut,
+        associated_token::mint = mint_from,
+        associated_token::authority = config
     )]
-    pub config: Account<'info, Config>,
+    pub vault_from: Box<Account<'info, TokenAccount>>,
+    #[account(
+        mut,
+        associated_token::mint = mint_to,
+        associated_token::authority = config
+    )]
+    pub vault_to: Box<Account<'info, TokenAccount>>,
+
+    #[account(
+        seeds = [b"config", config.load_seed()?.to_le_bytes().as_ref(), config.load_mint_x()?.key().as_ref(), config.load_mint_y()?.key().as_ref()], 
+        bump = *config.load_bump()?,
+    )]
+    pub config: LazyAccount<'info, Config>,
     pub token_program: Program<'info, Token>,
-    pub associated_token_program: Program<'info, AssociatedToken>,
-    pub system_program: Program<'info, System>
 }
 
 impl<'info> Swap<'info> {
-    pub fn swap(
-        &mut self,
-        is_x: bool,
+    pub fn checks(
+        &self,
         amount: u64,
         min: u64,
         expiration: i64
-    ) -> Result<()> {
+    ) -> Result<()> {  
         // Check if the pool is locked
-        require!(self.config.locked == false, AmmError::PoolLocked);
+        require_eq!(*self.config.load_locked()?, false, AmmError::PoolLocked);
 
         // Check if the offer has expired
-        require!(expiration > Clock::get()?.unix_timestamp, AmmError::OfferExpired);
+        require_gt!(expiration, Clock::get()?.unix_timestamp, AmmError::OfferExpired);
 
         // Check if the amount is valid
-        require!(amount > 0, AmmError::InvalidAmount);
+        require_gt!(amount, 0, AmmError::InvalidAmount);
 
+        // Check if the min is valid
+        require_gt!(min, 0, AmmError::InvalidAmount);
+
+        Ok(())
+    }
+
+    pub fn swap(
+        &mut self,
+        amount: u64,
+        min: u64,
+    ) -> Result<()> {
+
+       // Check if the mint are valid and decide the direction of the swap
+       let (from_amount, to_amount) = if self.mint_from.key() == *self.config.load_mint_x()? {
+            require_eq!(self.mint_to.key(), *self.config.load_mint_y()?, AmmError::InvalidMint);
+            self.swap_x_to_y(amount, min)?
+        } else if self.mint_from.key() == *self.config.load_mint_y()? {
+            require_eq!(self.mint_to.key(), *self.config.load_mint_x()?, AmmError::InvalidMint);
+            self.swap_y_to_x(amount, min)?
+        } else {
+            return Err(AmmError::InvalidMint.into());
+        };
+
+        // Deposit the tokens
+        self.deposit_token(from_amount)?;
+
+        // Withdraw the tokens
+        self.withdraw_token(to_amount)?;
+
+        Ok(())
+    }
+
+    pub fn swap_x_to_y(
+        &mut self,
+        amount: u64,
+        min: u64
+    ) -> Result<(u64, u64)> {
+        // Calculate the amounts to swap
         let mut curve = ConstantProduct::init(
-            self.vault_x.amount,
-            self.vault_y.amount,
-            self.vault_x.amount,
-            self.config.fee,
+            self.vault_from.amount,
+            self.vault_to.amount,
+            self.vault_from.amount,
+            *self.config.load_fee()?,
             None
         ).map_err(AmmError::from)?;
 
-        let p = match is_x {
-            true => LiquidityPair::X,
-            false => LiquidityPair::Y
-        };
-
-        let res = curve.swap(p, amount, min).map_err(AmmError::from)?;
+        let amounts = curve.swap(LiquidityPair::X, amount, min).map_err(AmmError::from)?;
 
         // Check if the amounts are valid
-        require!(res.deposit > 0, AmmError::InvalidAmount);
-        require!(res.withdraw > 0, AmmError::InvalidAmount);
+        require_gt!(amounts.deposit, 0, AmmError::InvalidAmount);
+        require_gt!(amounts.withdraw, 0, AmmError::InvalidAmount);
 
-        // Deposit the tokens
-        self.deposit_token(is_x, res.deposit)?;
+        Ok((amounts.deposit, amounts.withdraw))
+    }
 
-        // Withdraw the tokens
-        self.withdraw_token(is_x, res.withdraw)?;
-        Ok(())
+    pub fn swap_y_to_x(
+        &mut self,
+        amount: u64,
+        min: u64
+    ) -> Result<(u64, u64)> {
+        let mut curve = ConstantProduct::init(
+            self.vault_to.amount,
+            self.vault_from.amount,
+            self.vault_to.amount,
+            *self.config.load_fee()?,
+            None
+        ).map_err(AmmError::from)?;
+
+        let amounts = curve.swap(LiquidityPair::Y, amount, min).map_err(AmmError::from)?;
+
+        // Check if the amounts are valid
+        require_gt!(amounts.deposit, 0, AmmError::InvalidAmount);
+        require_gt!(amounts.withdraw, 0, AmmError::InvalidAmount);
+
+        Ok((amounts.deposit, amounts.withdraw))
     }
 
     pub fn deposit_token(
         &mut self,
-        is_x: bool,
         amount: u64
     ) -> Result<()> {
-        let (from, to) = match is_x {
-            true => (self.user_x.to_account_info(), self.vault_x.to_account_info()),
-            false => (self.user_y.to_account_info(), self.vault_y.to_account_info())
-        };
-
         // Create the transfer accounts
         let accounts = Transfer {
-            from,
-            to,
+            from: self.user_from.to_account_info(),
+            to: self.vault_from.to_account_info(),
             authority: self.user.to_account_info()
         };
 
@@ -125,25 +159,25 @@ impl<'info> Swap<'info> {
 
     pub fn withdraw_token(
         &mut self,
-        is_x: bool,
         amount: u64
     ) -> Result<()> {
-        let (from, to) = match is_x {
-            true => (self.vault_y.to_account_info(), self.user_y.to_account_info()),
-            false => (self.vault_x.to_account_info(), self.user_x.to_account_info())
-        };
-
         // Create the transfer accounts
         let accounts = Transfer {
-            from,
-            to,
-            authority: self.auth.to_account_info()
+            from: self.vault_to.to_account_info(),
+            to: self.user_to.to_account_info(),
+            authority: self.config.to_account_info()
         };
 
         // Create the signer seeds
+        let seed_binding = self.config.load_seed()?.to_le_bytes();
+        let mint_x_binding = self.config.load_mint_x()?.key().to_bytes();
+        let mint_y_binding = self.config.load_mint_y()?.key().to_bytes();
+
         let seeds = &[
-            &b"auth"[..],
-            &[self.config.auth_bump],
+            b"config".as_ref(),
+            seed_binding.as_ref(),
+            mint_x_binding.as_ref(),
+            mint_y_binding.as_ref(),
         ];
 
         let signer_seeds = &[&seeds[..]];

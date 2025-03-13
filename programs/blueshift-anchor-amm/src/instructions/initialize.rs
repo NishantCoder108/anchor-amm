@@ -2,7 +2,7 @@ use anchor_lang::prelude::*;
 use anchor_spl::token::{Mint, TokenAccount, Token};
 use anchor_spl::associated_token::AssociatedToken;
 use crate::errors::AmmError;
-use crate::state::Config;
+use crate::state::{Config, LazyConfig};
 
 #[derive(Accounts)]
 #[instruction(seed: u64)]
@@ -17,37 +17,34 @@ pub struct Initialize<'info> {
         payer = initializer,
         bump,
         mint::decimals = 6,
-        mint::authority = auth,
+        mint::authority = config,
     )]
     pub mint_lp: Account<'info, Mint>,
     #[account(
         init,
         payer = initializer,
         associated_token::mint = mint_x,
-        associated_token::authority = auth,
+        associated_token::authority = config,
     )]
     pub vault_x: Box<Account<'info, TokenAccount>>,
     #[account(
         init,
         payer = initializer,
         associated_token::mint = mint_y,
-        associated_token::authority = auth,
+        associated_token::authority = config,
     )]
     pub vault_y: Box<Account<'info, TokenAccount>>,
-    /// CHECK: This is safe because it's just used to sign
-    #[account(seeds = [b"auth"], bump)]
-    pub auth: UncheckedAccount<'info>,
     #[account(
         init, 
         payer = initializer, 
         seeds = [b"config", seed.to_le_bytes().as_ref(), mint_x.key().as_ref(), mint_y.key().as_ref()], 
         bump,
-        space = Config::INIT_SPACE
+        space =  Config::DISCRIMINATOR.len() + Config::INIT_SPACE
     )]
-    pub config: Account<'info, Config>,
+    pub config: LazyAccount<'info, Config>,
+    pub system_program: Program<'info, System>,
     pub token_program: Program<'info, Token>,
     pub associated_token_program: Program<'info, AssociatedToken>,
-    pub system_program: Program<'info, System>
 }
 
 impl<'info> Initialize<'info> {
@@ -61,18 +58,18 @@ impl<'info> Initialize<'info> {
         // Don't charge >100.00% as a fee
         require!(fee <= 10000, AmmError::InvalidFee);
 
-        // Initialize the config
-        self.config.set_inner(Config {
+        // Initialize the config using load_mut()
+        let mut config = self.config.load_mut()?;
+        *config = Config {
             seed,
-            authority: Some(authority),
+            authority,
             mint_x: self.mint_x.key(),
             mint_y: self.mint_y.key(),
             fee,
             locked: false,
-            auth_bump: bumps.auth,
-            config_bump: bumps.config,
-            lp_bump: bumps.mint_lp
-        });
+            lp_bump: bumps.mint_lp,
+            bump: bumps.config
+        };
 
         Ok(())
     }
