@@ -72,7 +72,7 @@ impl<'info> Swap<'info> {
     ) -> Result<()> {
 
        // Check if the mint are valid and decide the direction of the swap
-       let (from_amount, to_amount) = if self.mint_from.key() == *self.config.load_mint_x()? {
+       let (from_amount, to_amount, fee_amount) = if self.mint_from.key() == *self.config.load_mint_x()? {
             require_eq!(self.mint_to.key(), *self.config.load_mint_y()?, AmmError::InvalidMint);
             self.swap_x_to_y(amount, min)?
         } else if self.mint_from.key() == *self.config.load_mint_y()? {
@@ -88,6 +88,9 @@ impl<'info> Swap<'info> {
         // Withdraw the tokens
         self.withdraw_token(to_amount)?;
 
+        // Pay the fee
+        self.pay_fee(fee_amount)?;
+
         Ok(())
     }
 
@@ -95,7 +98,7 @@ impl<'info> Swap<'info> {
         &mut self,
         amount: u64,
         min: u64
-    ) -> Result<(u64, u64)> {
+    ) -> Result<(u64, u64, u64)> {
         // Calculate the amounts to swap
         let mut curve = ConstantProduct::init(
             self.vault_from.amount,
@@ -111,14 +114,14 @@ impl<'info> Swap<'info> {
         require_gt!(amounts.deposit, 0, AmmError::InvalidAmount);
         require_gt!(amounts.withdraw, 0, AmmError::InvalidAmount);
 
-        Ok((amounts.deposit, amounts.withdraw))
+        Ok((amounts.deposit, amounts.withdraw, amounts.fee))
     }
 
     pub fn swap_y_to_x(
         &mut self,
         amount: u64,
         min: u64
-    ) -> Result<(u64, u64)> {
+    ) -> Result<(u64, u64, u64)> {
         let mut curve = ConstantProduct::init(
             self.vault_to.amount,
             self.vault_from.amount,
@@ -133,7 +136,7 @@ impl<'info> Swap<'info> {
         require_gt!(amounts.deposit, 0, AmmError::InvalidAmount);
         require_gt!(amounts.withdraw, 0, AmmError::InvalidAmount);
 
-        Ok((amounts.deposit, amounts.withdraw))
+        Ok((amounts.deposit, amounts.withdraw, amounts.fee))
     }
 
     pub fn deposit_token(
@@ -187,6 +190,27 @@ impl<'info> Swap<'info> {
             self.token_program.to_account_info(),
             accounts,
             signer_seeds
+        );
+
+        // Execute the transfer
+        transfer(ctx, amount)
+    }
+
+    pub fn pay_fee(
+        &mut self,
+        amount: u64
+    ) -> Result<()> {
+         // Create the transfer accounts
+         let accounts = Transfer {
+            from: self.user_from.to_account_info(),
+            to: self.vault_from.to_account_info(),
+            authority: self.user.to_account_info()
+        };
+
+        // Create the transfer context
+        let ctx = CpiContext::new(
+            self.token_program.to_account_info(),
+            accounts
         );
 
         // Execute the transfer
