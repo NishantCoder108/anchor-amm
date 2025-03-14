@@ -1,6 +1,6 @@
 use anchor_lang::prelude::*;
 use crate::errors::AmmError;
-use crate::state::{Config, LazyConfig};
+use crate::state::Config;
 
 #[derive(Accounts)]
 pub struct ConfigAction<'info> {
@@ -8,17 +8,17 @@ pub struct ConfigAction<'info> {
     pub authority: Signer<'info>,
     #[account(
         mut, 
-        seeds = [b"config", config.load_seed()?.to_le_bytes().as_ref(), config.load_mint_x()?.key().as_ref(), config.load_mint_y()?.key().as_ref()], 
-        bump = *config.load_bump()?,
+        seeds = [b"config", config.seed.to_le_bytes().as_ref(), config.mint_x.as_ref(), config.mint_y.as_ref()], 
+        bump = config.bump,
     )]
-    pub config: LazyAccount<'info, Config>,
+    pub config: Account<'info, Config>,
 }
 
 impl<'info> ConfigAction<'info> {
     pub fn check_authority(
         &self,
     ) -> Result<()> {
-        require_eq!(self.authority.key(), *self.config.load_authority()?, AmmError::InvalidAuthority);
+        require_eq!(self.authority.key(), self.config.authority, AmmError::InvalidAuthority);
 
         Ok(())
     }
@@ -29,7 +29,7 @@ impl<'info> ConfigAction<'info> {
     ) -> Result<()> {
 
         // Update the authority
-        *self.config.load_mut_authority()? = authority;
+        self.config.authority = authority;
 
         Ok(())
     }
@@ -42,7 +42,7 @@ impl<'info> ConfigAction<'info> {
         require_gte!(10000, fee, AmmError::InvalidFee);
 
         // Update the fee
-        *self.config.load_mut_fee()? = fee;
+        self.config.fee = fee;
 
         Ok(())
     }
@@ -51,7 +51,7 @@ impl<'info> ConfigAction<'info> {
         &mut self,
     ) -> Result<()> {
         // Update the lock
-        *self.config.load_mut_locked()? = !*self.config.load_locked()?;
+        self.config.locked = !self.config.locked;
 
         Ok(())
     }
@@ -60,7 +60,7 @@ impl<'info> ConfigAction<'info> {
         &mut self,
     ) -> Result<()> {
         // Remove the authority
-        *self.config.load_mut_authority()? = Pubkey::default();
+        self.config.authority = Pubkey::default();
 
         Ok(())
     }

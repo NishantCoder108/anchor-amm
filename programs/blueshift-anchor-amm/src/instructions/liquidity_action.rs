@@ -1,7 +1,7 @@
 use anchor_lang::prelude::*;
 use anchor_spl::token::{Mint, Token, TokenAccount, Transfer, MintTo, Burn, transfer, mint_to, burn};
 use constant_product_curve::ConstantProduct;
-use crate::state::{Config, LazyConfig};
+use crate::state::Config;
 use crate::errors::AmmError;
 
 #[derive(Accounts)]
@@ -13,7 +13,7 @@ pub struct LiquidityAction<'info> {
     #[account(
         mut,
         seeds = [b"lp", config.key().as_ref()],
-        bump = *config.load_lp_bump()?
+        bump = config.lp_bump
     )]
     pub mint_lp: Box<Account<'info, Mint>>,
     #[account(
@@ -47,10 +47,10 @@ pub struct LiquidityAction<'info> {
     )]
     pub user_lp: Box<Account<'info, TokenAccount>>,
     #[account(
-        seeds = [b"config", config.load_seed()?.to_le_bytes().as_ref(), mint_x.key().as_ref(), mint_y.key().as_ref()], 
-        bump = *config.load_bump()?,
+        seeds = [b"config", config.seed.to_le_bytes().as_ref(), config.mint_x.as_ref(), config.mint_y.as_ref()], 
+        bump = config.bump,
     )]
-    pub config: LazyAccount<'info, Config>,
+    pub config: Account<'info, Config>,
     pub token_program: Program<'info, Token>,
 }
 
@@ -63,8 +63,8 @@ impl<'info> LiquidityAction<'info> {
         expiration: i64
     ) -> Result<()> {
         // Check if the pool is locked
-        require_eq!(*self.config.load_locked()?, true, AmmError::PoolLocked);
-
+        require_eq!(self.config.locked, false, AmmError::PoolLocked);
+        
         // Check if the offer has expired
         require_gt!(expiration, Clock::get()?.unix_timestamp, AmmError::OfferExpired);
 
@@ -145,7 +145,7 @@ impl<'info> LiquidityAction<'info> {
         };
 
         // Create the signer seeds
-        let seed_binding = self.config.load_seed()?.to_le_bytes();
+        let seed_binding = self.config.seed.to_le_bytes();
         let mint_x_binding = self.mint_x.key().to_bytes();
         let mint_y_binding = self.mint_y.key().to_bytes();
 
@@ -154,7 +154,7 @@ impl<'info> LiquidityAction<'info> {
             seed_binding.as_ref(),
             mint_x_binding.as_ref(),
             mint_y_binding.as_ref(),
-            &[*self.config.load_bump()?],
+            &[self.config.bump],
         ];
 
         let signer_seeds = &[&seeds[..]];
@@ -222,7 +222,7 @@ impl<'info> LiquidityAction<'info> {
         };
         
         // Create the signer seeds
-        let seed_binding = self.config.load_seed()?.to_le_bytes();
+        let seed_binding = self.config.seed.to_le_bytes();
         let mint_x_binding = self.mint_x.key().to_bytes();
         let mint_y_binding = self.mint_y.key().to_bytes();
 
@@ -231,7 +231,7 @@ impl<'info> LiquidityAction<'info> {
             seed_binding.as_ref(),
             mint_x_binding.as_ref(),
             mint_y_binding.as_ref(),
-            &[*self.config.load_bump()?],
+            &[self.config.bump],
         ];
 
         let signer_seeds = &[&seeds[..]];

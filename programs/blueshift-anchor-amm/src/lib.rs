@@ -20,16 +20,16 @@ pub mod blueshift_anchor_amm {
     }
 
     #[instruction(discriminator = 1)]
-    pub fn deposit(ctx: Context<LiquidityAction>, amount: u64, max_x: u64, max_y: u64) -> Result<()> {
-        ctx.accounts.checks(amount, max_x, max_y, Clock::get()?.unix_timestamp)?;
+    pub fn deposit(ctx: Context<LiquidityAction>, amount: u64, max_x: u64, max_y: u64, expiration: i64) -> Result<()> {
+        ctx.accounts.checks(amount, max_x, max_y, expiration)?;
         ctx.accounts.deposit(amount, max_x, max_y)?;
 
         Ok(())
     }
 
     #[instruction(discriminator = 2)]
-    pub fn withdraw(ctx: Context<LiquidityAction>, amount: u64, min_x: u64, min_y: u64) -> Result<()> {
-        ctx.accounts.checks(amount, min_x, min_y, Clock::get()?.unix_timestamp)?;
+    pub fn withdraw(ctx: Context<LiquidityAction>, amount: u64, min_x: u64, min_y: u64, expiration: i64) -> Result<()> {
+        ctx.accounts.checks(amount, min_x, min_y, expiration)?;
         ctx.accounts.withdraw(amount, min_x, min_y)?;
 
         Ok(())

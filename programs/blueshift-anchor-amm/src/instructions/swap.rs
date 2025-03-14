@@ -1,7 +1,7 @@
 use anchor_lang::prelude::*;
 use anchor_spl::token::{Mint, Token, TokenAccount, Transfer, transfer};
 use constant_product_curve::{ConstantProduct, LiquidityPair};
-use crate::state::{Config, LazyConfig};
+use crate::state::Config;
 use crate::errors::AmmError;
 
 #[derive(Accounts)]
@@ -36,10 +36,10 @@ pub struct Swap<'info> {
     pub vault_to: Box<Account<'info, TokenAccount>>,
 
     #[account(
-        seeds = [b"config", config.load_seed()?.to_le_bytes().as_ref(), config.load_mint_x()?.key().as_ref(), config.load_mint_y()?.key().as_ref()], 
-        bump = *config.load_bump()?,
+        seeds = [b"config", config.seed.to_le_bytes().as_ref(), config.mint_x.as_ref(), config.mint_y.as_ref()], 
+        bump = config.bump,
     )]
-    pub config: LazyAccount<'info, Config>,
+    pub config: Account<'info, Config>,
     pub token_program: Program<'info, Token>,
 }
 
@@ -51,7 +51,7 @@ impl<'info> Swap<'info> {
         expiration: i64
     ) -> Result<()> {  
         // Check if the pool is locked
-        require_eq!(*self.config.load_locked()?, false, AmmError::PoolLocked);
+        require_eq!(self.config.locked, false, AmmError::PoolLocked);
 
         // Check if the offer has expired
         require_gt!(expiration, Clock::get()?.unix_timestamp, AmmError::OfferExpired);
@@ -72,15 +72,17 @@ impl<'info> Swap<'info> {
     ) -> Result<()> {
 
        // Check if the mint are valid and decide the direction of the swap
-       let (from_amount, to_amount, fee_amount) = if self.mint_from.key() == *self.config.load_mint_x()? {
-            require_eq!(self.mint_to.key(), *self.config.load_mint_y()?, AmmError::InvalidMint);
+       let (from_amount, to_amount, fee_amount) = if self.mint_from.key() == self.config.mint_x.key() {
+            require_eq!(self.mint_to.key(), self.config.mint_y.key(), AmmError::InvalidMint);
             self.swap_x_to_y(amount, min)?
-        } else if self.mint_from.key() == *self.config.load_mint_y()? {
-            require_eq!(self.mint_to.key(), *self.config.load_mint_x()?, AmmError::InvalidMint);
+        } else if self.mint_from.key() == self.config.mint_y.key() {
+            require_eq!(self.mint_to.key(), self.config.mint_x.key(), AmmError::InvalidMint);
             self.swap_y_to_x(amount, min)?
         } else {
             return Err(AmmError::InvalidMint.into());
         };
+
+        msg!("From Amount: {}, To Amount: {}, Fee Amount: {}", from_amount, to_amount, fee_amount);
 
         // Deposit the tokens
         self.deposit_token(from_amount)?;
@@ -104,7 +106,7 @@ impl<'info> Swap<'info> {
             self.vault_from.amount,
             self.vault_to.amount,
             self.vault_from.amount,
-            *self.config.load_fee()?,
+            self.config.fee,
             None
         ).map_err(AmmError::from)?;
 
@@ -126,7 +128,7 @@ impl<'info> Swap<'info> {
             self.vault_to.amount,
             self.vault_from.amount,
             self.vault_to.amount,
-            *self.config.load_fee()?,
+            self.config.fee,
             None
         ).map_err(AmmError::from)?;
 
@@ -172,15 +174,16 @@ impl<'info> Swap<'info> {
         };
 
         // Create the signer seeds
-        let seed_binding = self.config.load_seed()?.to_le_bytes();
-        let mint_x_binding = self.config.load_mint_x()?.key().to_bytes();
-        let mint_y_binding = self.config.load_mint_y()?.key().to_bytes();
+        let seed_binding = self.config.seed.to_le_bytes();
+        let mint_x_binding = self.config.mint_x.key().to_bytes();
+        let mint_y_binding = self.config.mint_y.key().to_bytes();
 
-        let seeds = &[
+        let seeds: &[&[u8]] = &[
             b"config".as_ref(),
             seed_binding.as_ref(),
             mint_x_binding.as_ref(),
             mint_y_binding.as_ref(),
+            &[self.config.bump],
         ];
 
         let signer_seeds = &[&seeds[..]];
