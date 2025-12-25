@@ -2,7 +2,7 @@ use anchor_lang::prelude::*;
 use anchor_spl::token::{Mint, TokenAccount, Token};
 use anchor_spl::associated_token::AssociatedToken;
 use crate::errors::AmmError;
-use crate::state::{Config, LazyConfig};
+use crate::state::Config;
 
 #[derive(Accounts)]
 #[instruction(seed: u64)]
@@ -41,7 +41,7 @@ pub struct Initialize<'info> {
         bump,
         space =  Config::DISCRIMINATOR.len() + Config::INIT_SPACE
     )]
-    pub config: LazyAccount<'info, Config>,
+    pub config: Account<'info, Config>,
     pub system_program: Program<'info, System>,
     pub token_program: Program<'info, Token>,
     pub associated_token_program: Program<'info, AssociatedToken>,
@@ -55,22 +55,33 @@ impl<'info> Initialize<'info> {
         fee: u16,
         bumps: &InitializeBumps
     ) -> Result<()> {
-        // Don't charge >100.00% as a fee
-        require!(fee <= 10000, AmmError::InvalidFee);
-
         // Initialize the config using load_mut()
-        let mut config = self.config.load_mut()?;
-        *config = Config {
-            seed,
-            authority,
-            mint_x: self.mint_x.key(),
-            mint_y: self.mint_y.key(),
-            fee,
-            locked: false,
-            lp_bump: bumps.mint_lp,
-            bump: bumps.config
-        };
+        self.config.set_inner(
+            Config {
+                seed,
+                authority,
+                mint_x: self.mint_x.key(),
+                mint_y: self.mint_y.key(),
+                fee,
+                locked: false,
+                lp_bump: bumps.mint_lp,
+                bump: bumps.config
+            }
+        );
 
         Ok(())
     }
+}
+
+pub fn initialize(
+    ctx: Context<Initialize>,
+    seed: u64,
+    authority: Pubkey,
+    fee: u16,
+    bumps: &InitializeBumps
+) -> Result<()> {
+    // Don't charge >100.00% as a fee
+    require!(fee <= 10000, AmmError::InvalidFee);
+    
+    ctx.accounts.initialize_config(seed, authority, fee, bumps)
 }

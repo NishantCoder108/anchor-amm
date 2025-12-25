@@ -43,6 +43,16 @@ pub enum AmmError {
     ZeroBalance,
     #[msg("Invalid mint.")]
     InvalidMint,
+    #[msg("Invalid vesting schedule.")]
+    InvalidVestingSchedule,
+    #[msg("Insufficient unlocked LP tokens.")]
+    InsufficientUnlockedLp,
+    #[msg("Not the position owner.")]
+    NotPositionOwner,
+    #[msg("Position still has LP tokens.")]
+    PositionNotEmpty,
+    #[msg("Invalid pool for this position.")]
+    InvalidPool,
 }
 
 impl From<CurveError> for AmmError {

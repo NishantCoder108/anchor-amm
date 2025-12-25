@@ -1,8 +1,11 @@
 pub mod initialize;
 pub use initialize::*;
 
-pub mod liquidity_action;
-pub use liquidity_action::*;
+pub mod deposit;
+pub use deposit::*;
+
+pub mod withdraw;
+pub use withdraw::*;
 
 pub mod swap;
 pub use swap::*;
