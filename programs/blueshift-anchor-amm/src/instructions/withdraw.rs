@@ -2,10 +2,9 @@ use anchor_lang::prelude::*;
 use anchor_spl::token_2022::{Token2022, spl_token_2022};
 use anchor_spl::token_interface::{Mint, TokenAccount, transfer, Transfer, burn, Burn};
 use anchor_spl::token::Token;
-use constant_product_curve::ConstantProduct;
 use crate::state::Config;
 use crate::errors::AmmError;
-use crate::constants::{VIRTUAL_SHARES, VIRTUAL_ASSETS};
+use crate::constants::MINIMUM_LIQUIDITY;
 
 #[derive(Accounts)]
 pub struct Withdraw<'info> {
@@ -81,27 +80,29 @@ impl<'info> Withdraw<'info> {
     }
 
     pub fn calculate_amounts(&self, amount: u64) -> Result<(u64, u64)> {
+        // MINIMUM_LIQUIDITY acts as virtual dead shares that were never minted.
+        // This prevents inflation attacks by diluting all LP shares.
+        // adjusted_supply = actual_minted + virtual_locked
         let adjusted_supply = (self.mint_lp.supply as u128)
-            .checked_add(VIRTUAL_SHARES as u128)
+            .checked_add(MINIMUM_LIQUIDITY as u128)
             .ok_or(AmmError::Overflow)?;
 
-        let adjusted_vault_x = (self.vault_x.amount as u128)
-            .checked_add(VIRTUAL_ASSETS as u128)
-            .ok_or(AmmError::Overflow)?;
+        // Calculate withdrawal amounts proportional to current pool state
+        // x_out = vault_x * lp_amount / adjusted_supply
+        // y_out = vault_y * lp_amount / adjusted_supply
+        let x = (self.vault_x.amount as u128)
+            .checked_mul(amount as u128)
+            .ok_or(AmmError::Overflow)?
+            .checked_div(adjusted_supply)
+            .ok_or(AmmError::Overflow)? as u64;
 
-        let adjusted_vault_y = (self.vault_y.amount as u128)
-            .checked_add(VIRTUAL_ASSETS as u128)
-            .ok_or(AmmError::Overflow)?;
+        let y = (self.vault_y.amount as u128)
+            .checked_mul(amount as u128)
+            .ok_or(AmmError::Overflow)?
+            .checked_div(adjusted_supply)
+            .ok_or(AmmError::Overflow)? as u64;
 
-        let amounts = ConstantProduct::xy_withdraw_amounts_from_l(
-            adjusted_vault_x as u64,
-            adjusted_vault_y as u64,
-            adjusted_supply as u64,
-            amount,
-            6
-        ).map_err(AmmError::from)?;
-
-        Ok((amounts.x, amounts.y))
+        Ok((x, y))
     }
 
     pub fn withdraw_tokens(&self, is_x: bool, amount: u64) -> Result<()> {

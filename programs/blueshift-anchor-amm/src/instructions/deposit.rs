@@ -2,10 +2,9 @@ use anchor_lang::prelude::*;
 use anchor_spl::token_2022::{Token2022, spl_token_2022};
 use anchor_spl::token_interface::{Mint as InterfaceMint, TokenAccount as InterfaceTokenAccount, transfer, Transfer};
 use anchor_spl::token::{Mint, TokenAccount, mint_to, MintTo, Token};
-use constant_product_curve::ConstantProduct;
 use crate::state::Config;
 use crate::errors::AmmError;
-use crate::constants::{VIRTUAL_SHARES, VIRTUAL_ASSETS};
+use crate::constants::MINIMUM_LIQUIDITY;
 
 #[derive(Accounts)]
 pub struct Deposit<'info> {
@@ -76,7 +75,10 @@ impl<'info> Deposit<'info> {
         require_gt!(amount, 0, AmmError::InvalidAmount);
         require_gt!(max_x, 0, AmmError::InvalidAmount);
         require_gt!(max_y, 0, AmmError::InvalidAmount);
-        
+
+        // Pool must be initialized (first deposit happens in initialize)
+        require_gt!(self.mint_lp.supply, 0, AmmError::PoolNotInitialized);
+
         Ok(())
     }
 
@@ -84,31 +86,31 @@ impl<'info> Deposit<'info> {
         &self,
         amount: u64,
     ) -> Result<(u64, u64)> {
-        // Use virtual shares offset to prevent first depositor inflation attacks.
-        // Even on first deposit, we calculate as if there are already VIRTUAL_SHARES
-        // and VIRTUAL_ASSETS in the pool.
+        // MINIMUM_LIQUIDITY acts as virtual dead shares that were never minted.
+        // This prevents inflation attacks by diluting all LP shares.
+        // adjusted_supply = actual_minted + virtual_locked
         let adjusted_supply = (self.mint_lp.supply as u128)
-            .checked_add(VIRTUAL_SHARES as u128)
+            .checked_add(MINIMUM_LIQUIDITY as u128)
             .ok_or(AmmError::Overflow)?;
 
-        let adjusted_vault_x = (self.vault_x.amount as u128)
-            .checked_add(VIRTUAL_ASSETS as u128)
-            .ok_or(AmmError::Overflow)?;
+        // Calculate required deposits proportional to current pool state
+        // x_required = vault_x * lp_amount / adjusted_supply
+        // y_required = vault_y * lp_amount / adjusted_supply
+        let x = (self.vault_x.amount as u128)
+            .checked_mul(amount as u128)
+            .ok_or(AmmError::Overflow)?
+            .checked_div(adjusted_supply)
+            .ok_or(AmmError::Overflow)?
+            .checked_add(1) // Round up to prevent rounding exploits
+            .ok_or(AmmError::Overflow)? as u64;
 
-        let adjusted_vault_y = (self.vault_y.amount as u128)
-            .checked_add(VIRTUAL_ASSETS as u128)
-            .ok_or(AmmError::Overflow)?;
-
-        // Calculate required deposits based on the requested LP amount with virtual offset
-        let amounts = ConstantProduct::xy_deposit_amounts_from_l(
-            adjusted_vault_x as u64,
-            adjusted_vault_y as u64,
-            adjusted_supply as u64,
-            amount,
-            6
-        ).map_err(AmmError::from)?;
-
-        let (x, y) = (amounts.x, amounts.y);
+        let y = (self.vault_y.amount as u128)
+            .checked_mul(amount as u128)
+            .ok_or(AmmError::Overflow)?
+            .checked_div(adjusted_supply)
+            .ok_or(AmmError::Overflow)?
+            .checked_add(1) // Round up to prevent rounding exploits
+            .ok_or(AmmError::Overflow)? as u64;
 
         Ok((x, y))
     }
@@ -191,7 +193,7 @@ pub fn deposit(
     max_y: u64,
     expiration: i64,
 ) -> Result<()> {
-    let flags = ctx.accounts.checks(amount, max_x, max_y, expiration)?;
+    ctx.accounts.checks(amount, max_x, max_y, expiration)?;
     let (x, y) = ctx.accounts.calculate_amounts(amount)?;
 
     require_gte!(max_x, x, AmmError::SlippageExceeded);

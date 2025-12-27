@@ -15,9 +15,15 @@ pub mod blueshift_anchor_amm {
     use super::*;
 
     #[instruction(discriminator = 0)]
-    pub fn initialize(ctx: Context<Initialize>, seed: u64, authority: Pubkey, fee: u16) -> Result<()> {
-        require!(fee <= 10000, AmmError::InvalidFee);
-        ctx.accounts.initialize_config(seed, authority, fee, &ctx.bumps)
+    pub fn initialize(
+        ctx: Context<Initialize>, 
+        seed: u64, 
+        authority: Pubkey, 
+        fee: u16,
+        init_amount_x: u64,
+        init_amount_y: u64,
+    ) -> Result<()> {
+        instructions::initialize(ctx, seed, authority, fee, init_amount_x, init_amount_y)
     }
 
     #[instruction(discriminator = 1)]

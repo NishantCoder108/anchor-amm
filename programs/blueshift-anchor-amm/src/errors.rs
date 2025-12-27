@@ -53,6 +53,10 @@ pub enum AmmError {
     PositionNotEmpty,
     #[msg("Invalid pool for this position.")]
     InvalidPool,
+    #[msg("Pool not initialized. Use initialize instruction for first deposit.")]
+    PoolNotInitialized,
+    #[msg("Initial liquidity too low. Must be greater than MINIMUM_LIQUIDITY.")]
+    InsufficientInitialLiquidity,
 }
 
 impl From<CurveError> for AmmError {
