@@ -1,9 +1,10 @@
 import { expect } from "chai";
 import { LiteSVM } from "litesvm";
+import * as borsh from "@coral-xyz/borsh";
 import anchor from "@coral-xyz/anchor";
 import Idl from "../target/idl/blueshift_anchor_amm.json" with {type: "json"};
-import { Keypair, PublicKey, TransactionInstruction } from "@solana/web3.js";
-import { ACCOUNT_SIZE, AccountLayout, getAssociatedTokenAddressSync, MINT_SIZE, MintLayout, TOKEN_PROGRAM_ID } from "@solana/spl-token";
+import { Keypair, PublicKey, SystemProgram, Transaction, TransactionInstruction } from "@solana/web3.js";
+import { ACCOUNT_SIZE, AccountLayout, ASSOCIATED_TOKEN_PROGRAM_ID, getAssociatedTokenAddressSync, MINT_SIZE, MintLayout, TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID } from "@solana/spl-token";
 
 
 describe("LiteSVM", () => {
@@ -35,7 +36,7 @@ describe("LiteSVM", () => {
         bonkMint.toBuffer()
     ], programId);
 
-    const [mint_lp] = PublicKey.findProgramAddressSync([
+    const [lpMint] = PublicKey.findProgramAddressSync([
         Buffer.from("lp"),
         configPda.toBuffer()
     ], programId);
@@ -45,7 +46,7 @@ describe("LiteSVM", () => {
     const vaultYAta = getAssociatedTokenAddressSync(bonkMint, configPda, true);
     const initializerXAta = getAssociatedTokenAddressSync(usdcMint, initializer.publicKey, true);
     const initializerYAta = getAssociatedTokenAddressSync(bonkMint, initializer.publicKey, true);
-    const initializerLpAta = getAssociatedTokenAddressSync(bonkMint, initializer.publicKey, true);
+    const initializerLpAta = getAssociatedTokenAddressSync(lpMint, initializer.publicKey, true);
 
     const InitializerHaveUsdc = BigInt(1_000_000_000_000);
     const InitializerHaveBonk = BigInt(50_000_000_000);
@@ -185,7 +186,7 @@ describe("LiteSVM", () => {
     it("Initialize pool", () => {
         const ixArgs = {
             seed: poolSeed,
-            authority: authority,
+            authority: authority.publicKey,
             fee: poolFee,
             init_amount_x: initialAmountX,
             init_amount_y: initialAmountY
@@ -198,19 +199,101 @@ describe("LiteSVM", () => {
                 { pubkey: initializer.publicKey, isWritable: true, isSigner: true },
                 { pubkey: usdcMint, isWritable: false, isSigner: false },
                 { pubkey: bonkMint, isWritable: false, isSigner: false },
-                { pubkey: mint_lp, isWritable: true, isSigner: false },
+                { pubkey: lpMint, isWritable: true, isSigner: false },
                 { pubkey: vaultXAta, isWritable: true, isSigner: false },
                 { pubkey: vaultYAta, isWritable: true, isSigner: false },
                 { pubkey: initializerXAta, isWritable: true, isSigner: false },
                 { pubkey: initializerYAta, isWritable: true, isSigner: false },
-
+                { pubkey: initializerLpAta, isWritable: true, isSigner: false },
+                { pubkey: configPda, isWritable: true, isSigner: false },
+                { pubkey: SystemProgram.programId, isWritable: false, isSigner: false },
+                { pubkey: TOKEN_PROGRAM_ID, isWritable: false, isSigner: false },
+                { pubkey: TOKEN_2022_PROGRAM_ID, isWritable: false, isSigner: false },
+                { pubkey: ASSOCIATED_TOKEN_PROGRAM_ID, isWritable: false, isSigner: false }
             ],
             programId,
             data
         })
+
+        const tx = new Transaction().add(ix);
+        tx.feePayer = initializer.publicKey;
+        tx.recentBlockhash = svm.latestBlockhash();
+        tx.sign(initializer);
+
+        const res = svm.sendTransaction(tx);
+        console.log(res.toString());
+
+
+        const configAccInfo = svm.getAccount(configPda);
+        const config = decodeConfigAccount(configAccInfo.data);
+
+        expect(config.seed.toString(), "Config 'seed' should match initial poolSeed")
+            .to.equal(poolSeed.toString());
+        expect(config.authority.toBase58(), "Config 'authority' should match pool authority")
+            .to.equal(authority.publicKey.toBase58());
+        expect(config.mint_x.toBase58(), "Config 'mint_x' should match USDC mint")
+            .to.equal(usdcMint.toBase58());
+        expect(config.mint_y.toBase58(), "Config 'mint_y' should match BONK mint")
+            .to.equal(bonkMint.toBase58());
+        expect(config.fee, "Config 'fee' should match input poolFee")
+            .to.equal(Number(poolFee));
+        expect(config.lp_bump, "Config 'lp_bump' should be a number").to.be.a("number");
+        expect(config.bump, "Config 'bump' should be a number").to.be.a("number");
+        expect(config.locked, "Config 'locked' should be a boolean").to.be.a("boolean");
+        expect(config.locked, "Config 'locked' should default to false").to.be.false;
+        expect(config.lp_bump).to.be.a("number");
+        expect(config.bump).to.be.a("number");
     })
-    // it("should create a new LiteSVM instance", () => {
-    //     const svm = new LiteSVM();
-    //     expect(svm).to.be.an.instanceof(LiteSVM);
-    // });
 });
+
+/**
+ * Borsh layout for the account (NO discriminator here)
+ */
+const ConfigLayout = borsh.struct([
+    borsh.u64("seed"),
+    borsh.publicKey("authority"),
+    borsh.publicKey("mint_x"),
+    borsh.publicKey("mint_y"),
+    borsh.u16("fee"),
+    borsh.bool("locked"),
+    borsh.u8("lp_bump"),
+    borsh.u8("bump"),
+]);
+
+export type ConfigAccount = {
+    seed: bigint;
+    authority: PublicKey;
+    mint_x: PublicKey;
+    mint_y: PublicKey;
+    fee: number;
+    locked: boolean;
+    lp_bump: number;
+    bump: number;
+};
+
+/**
+ * Decode Config account from LiteSVM
+ */
+export function decodeConfigAccount(
+    accountData: Uint8Array
+): ConfigAccount {
+    // Convert to Buffer (Node-safe, correct)
+    const buffer = Buffer.from(accountData);
+
+    // Skip custom discriminator (1 byte)
+    // use Buffer.subarray to skip first byte
+    const data = buffer.subarray(1);
+
+    const decoded = ConfigLayout.decode(data);
+
+    return {
+        seed: decoded.seed,
+        authority: decoded.authority,
+        mint_x: decoded.mint_x,
+        mint_y: decoded.mint_y,
+        fee: decoded.fee,
+        locked: decoded.locked,
+        lp_bump: decoded.lp_bump,
+        bump: decoded.bump,
+    };
+}
