@@ -1,6 +1,5 @@
 import { expect } from "chai";
 import { LiteSVM } from "litesvm";
-import * as borsh from "@coral-xyz/borsh";
 import anchor from "@coral-xyz/anchor";
 import Idl from "../target/idl/blueshift_anchor_amm.json" with {type: "json"};
 import { Keypair, PublicKey, SystemProgram, Transaction, TransactionInstruction } from "@solana/web3.js";
@@ -219,13 +218,10 @@ describe("LiteSVM", () => {
         tx.feePayer = initializer.publicKey;
         tx.recentBlockhash = svm.latestBlockhash();
         tx.sign(initializer);
-
-        const res = svm.sendTransaction(tx);
-        console.log(res.toString());
-
+        svm.sendTransaction(tx);
 
         const configAccInfo = svm.getAccount(configPda);
-        const config = decodeConfigAccount(configAccInfo.data);
+        const config = coder.accounts.decode("Config", Buffer.from(configAccInfo.data));
 
         expect(config.seed.toString(), "Config 'seed' should match initial poolSeed")
             .to.equal(poolSeed.toString());
@@ -246,54 +242,3 @@ describe("LiteSVM", () => {
     })
 });
 
-/**
- * Borsh layout for the account (NO discriminator here)
- */
-const ConfigLayout = borsh.struct([
-    borsh.u64("seed"),
-    borsh.publicKey("authority"),
-    borsh.publicKey("mint_x"),
-    borsh.publicKey("mint_y"),
-    borsh.u16("fee"),
-    borsh.bool("locked"),
-    borsh.u8("lp_bump"),
-    borsh.u8("bump"),
-]);
-
-export type ConfigAccount = {
-    seed: bigint;
-    authority: PublicKey;
-    mint_x: PublicKey;
-    mint_y: PublicKey;
-    fee: number;
-    locked: boolean;
-    lp_bump: number;
-    bump: number;
-};
-
-/**
- * Decode Config account from LiteSVM
- */
-export function decodeConfigAccount(
-    accountData: Uint8Array
-): ConfigAccount {
-    // Convert to Buffer (Node-safe, correct)
-    const buffer = Buffer.from(accountData);
-
-    // Skip custom discriminator (1 byte)
-    // use Buffer.subarray to skip first byte
-    const data = buffer.subarray(1);
-
-    const decoded = ConfigLayout.decode(data);
-
-    return {
-        seed: decoded.seed,
-        authority: decoded.authority,
-        mint_x: decoded.mint_x,
-        mint_y: decoded.mint_y,
-        fee: decoded.fee,
-        locked: decoded.locked,
-        lp_bump: decoded.lp_bump,
-        bump: decoded.bump,
-    };
-}
